@@ -6,7 +6,7 @@ def compute_pde_loss(model, data, RHS, loss_fn):
 
     grads = torch.autograd.grad(u, data, torch.ones_like(u), create_graph=True)[0]
 
-    u_t = grads[:, 2:3] / 1000
+    u_t = grads[:, 2:3] 
     u_x = grads[:, 0:1]
     u_y = grads[:, 1:2]
 
@@ -16,7 +16,7 @@ def compute_pde_loss(model, data, RHS, loss_fn):
     u_xx = grads_x[:, 0:1]
     u_yy = grads_y[:, 1:2]
 
-    RHS_pred = (1/ALPHA)*u_t -(u_xx + u_yy)
+    RHS_pred = u_t -(u_xx + u_yy)
 
     return loss_fn(RHS_pred, RHS)
 

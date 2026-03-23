@@ -11,6 +11,16 @@ def train(model, data, conditions, RHS):
     loss_fn = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LR)
 
+     # --- Warmup: enforce IC before introducing PDE loss ---
+    print("Warming up on initial condition...")
+    for epoch in range(1000):
+        loss_ic = compute_initial_loss(model, conditions, loss_fn)
+        optimizer.zero_grad()
+        loss_ic.backward()
+        optimizer.step()
+        if epoch % 200 == 0:
+            print(f"  warmup {epoch:4d} | ic={loss_ic.item():.6f}")
+
     for epoch in range(config.EPOCHS):
 
         data_epoch = data.clone().detach().requires_grad_(True)
@@ -20,7 +30,7 @@ def train(model, data, conditions, RHS):
         loss_bc = compute_boundary_loss(model, conditions, loss_fn)
         loss_ic = compute_initial_loss(model, conditions, loss_fn)
 
-        loss_total = loss_pde + 1000 * loss_bc + 1000 * loss_ic
+        loss_total = loss_pde + config.W_BC*loss_bc + config.W_IC*loss_ic
 
         optimizer.zero_grad()
         loss_total.backward()

@@ -1,6 +1,6 @@
 def create_conditions(Xg, Yg, Tg):
     import torch
-    from config import device
+    from config import device, T_scale
 
     # --- boundaries ---
     venstre = torch.stack([
@@ -38,7 +38,7 @@ def create_conditions(Xg, Yg, Tg):
     # --- initial condition ---
     pi = torch.pi
 
-    initial = (torch.sin(pi*Xg[:,:,0]) * torch.sin(pi*Yg[:,:,0])).reshape(-1,1)
+    initial = ((torch.sin(pi*Xg[:,:,0]) * torch.sin(pi*Yg[:,:,0]))).reshape(-1,1)
 
     initial_points = torch.stack([
         Xg[:,:,0].reshape(-1),
