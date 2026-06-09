@@ -195,9 +195,9 @@ def run_pinn(config_idx, seed, out_dir):
 
 def run_fd(fd_config_idx, out_dir):
     cfg = FD_CONFIGS[fd_config_idx]
-    print(f"[FD] Config: {cfg['name']}  N_y={cfg['N_y']}  N_t={cfg['N_t']}")
+    print(f"[FD] Config: {cfg['name']}  N_y={cfg['N_y']}")
 
-    result = fd_solve(DOMAIN, N_y=cfg["N_y"], N_t=cfg["N_t"])
+    result = fd_solve(DOMAIN, N_y=cfg["N_y"], N_t_plot=cfg.get("N_t_plot", 1000))
 
     print(f"L2 rel: {result['l2_rel_final']:.4e}  |  Max err: {result['max_err_final']:.4e}")
     print(f"Solve time: {result['solve_time_sec']:.3f}s")
@@ -218,9 +218,8 @@ def run_fd(fd_config_idx, out_dir):
         v = DOMAIN["v"],
 
         # --- Grid parameters ---
-        N_y = result["N_y"],
-        N_t = result["N_t"],
-        dt  = result["dt"],
+        N_y     = result["N_y"],
+        N_t_plot= result["N_t_plot"],
 
         # --- Solution at final time ---
         u_final       = result["u_final"],

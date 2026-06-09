@@ -488,29 +488,29 @@ def train(model, all_params, domain_params, config, eval_fn=None):
 # Finite-difference reference solver
 # ---------------------------------------------------------------------------
 
-def fd_solve(domain_params, N_y=512, N_t=3000):
+def fd_solve(domain_params, N_y=512, N_t_plot=1000):
     """
-    Solve u_t + c*u_y = v*u_yy on [0,Y]×[0,T] with periodic BCs.
+    Pseudo-spectral solution for u_t + c*u_y = v*u_yy on periodic [0,Y].
+    IC: u(y,0) = sin(y).   Exact: u(y,t) = exp(-v*t)*sin(y - c*t).
 
-    Uses pseudo-spectral spatial differentiation (FFT) and RK4 time-stepping.
-    IC: u(y, 0) = sin(y).   Exact: u(y, t) = exp(-v*t) * sin(y - c*t).
+    Because the PDE is linear with constant coefficients each Fourier mode
+    evolves exactly:  û(k,t) = û(k,0) * exp(-(v*k² + i*c*k)*t).
+    No time-stepping is needed — the solution is computed directly at any t,
+    so there are no stability constraints or timestep size issues.
 
     Parameters
     ----------
-    domain_params : dict   Y, T, c, v  (N_f and K are ignored)
-    N_y           : int    number of spatial grid points
-    N_t           : int    number of time steps
+    domain_params : dict   Y, T, c, v
+    N_y           : int    spatial grid points (controls spatial resolution)
+    N_t_plot      : int    number of time snapshots to record error history at
 
     Returns
     -------
     dict with keys:
-        u_final, u_exact_final  — final solution and exact solution (length N_y)
-        y_grid, t_grid          — 1-D coordinate arrays
-        l2_rel_history          — relative L2 error at every time step  (N_t+1,)
-        max_err_history         — max abs error at every time step       (N_t+1,)
-        l2_rel_final, max_err_final
-        solve_time_sec
-        N_y, N_t, dt
+        u_final, u_exact_final, y_grid, t_grid,
+        l2_rel_history, max_err_history,
+        l2_rel_final, max_err_final,
+        solve_time_sec, N_y, N_t_plot
     """
     Y = domain_params["Y"]
     T = domain_params["T"]
@@ -518,46 +518,38 @@ def fd_solve(domain_params, N_y=512, N_t=3000):
     v = domain_params["v"]
 
     y     = np.linspace(0.0, Y, N_y, endpoint=False)
-    dt    = T / N_t
-    t_all = np.linspace(0.0, T, N_t + 1)
+    t_all = np.linspace(0.0, T, N_t_plot + 1)
+    k     = (2.0 * np.pi / Y) * np.fft.fftfreq(N_y, d=1.0 / N_y)
 
-    # Wavenumbers for periodic FFT differentiation on [0, Y]
-    k = (2.0 * np.pi / Y) * np.fft.fftfreq(N_y, d=1.0 / N_y)
+    u0_hat = np.fft.fft(np.sin(y))
 
-    def rhs(u):
-        u_hat   = np.fft.fft(u)
-        du_dy   = np.real(np.fft.ifft(1j * k * u_hat))
-        d2u_dy2 = np.real(np.fft.ifft(-k ** 2 * u_hat))
-        return -c * du_dy + v * d2u_dy2
+    def spectral_solution(t_val):
+        prop = np.exp(-(v * k ** 2 + 1j * c * k) * t_val)
+        return np.real(np.fft.ifft(u0_hat * prop))
 
-    def exact(t_val):
+    def analytic(t_val):
         return np.exp(-v * t_val) * np.sin(y - c * t_val)
 
     def errors(u, t_val):
-        ex  = exact(t_val)
+        ex  = analytic(t_val)
         err = u - ex
-        l2  = float(np.linalg.norm(err) / np.linalg.norm(ex))
-        mx  = float(np.max(np.abs(err)))
-        return l2, mx
+        return (float(np.linalg.norm(err) / np.linalg.norm(ex)),
+                float(np.max(np.abs(err))))
 
-    u              = np.sin(y).copy()
-    l2_history     = np.empty(N_t + 1)
-    max_history    = np.empty(N_t + 1)
-    l2_history[0], max_history[0] = errors(u, 0.0)
+    l2_history  = np.empty(N_t_plot + 1)
+    max_history = np.empty(N_t_plot + 1)
 
     t_wall = time.time()
-    for i in range(N_t):
-        k1 = rhs(u)
-        k2 = rhs(u + 0.5 * dt * k1)
-        k3 = rhs(u + 0.5 * dt * k2)
-        k4 = rhs(u + dt * k3)
-        u  = u + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
-        l2_history[i + 1], max_history[i + 1] = errors(u, t_all[i + 1])
+    for i, t_val in enumerate(t_all):
+        u = spectral_solution(t_val)
+        l2_history[i], max_history[i] = errors(u, t_val)
     solve_time = time.time() - t_wall
 
-    u_exact_final = exact(T)
+    u_final       = spectral_solution(T)
+    u_exact_final = analytic(T)
+
     return {
-        "u_final":          u,
+        "u_final":          u_final,
         "u_exact_final":    u_exact_final,
         "y_grid":           y,
         "t_grid":           t_all,
@@ -567,6 +559,5 @@ def fd_solve(domain_params, N_y=512, N_t=3000):
         "max_err_final":    float(max_history[-1]),
         "solve_time_sec":   solve_time,
         "N_y":              N_y,
-        "N_t":              N_t,
-        "dt":               dt,
+        "N_t_plot":         N_t_plot,
     }
