@@ -1,7 +1,7 @@
 """
 Train or solve one (config, seed) pair and save results to results/.
 
-PINN usage (via SLURM array):
+PINN usage (via LSF loop in submit_all.sh):
     python train.py --job_id 0              # config 0, seed SEEDS[0]
     python train.py --job_id 42 --n_seeds 8
 
@@ -250,7 +250,7 @@ def main():
 
     # PINN mode
     parser.add_argument("--job_id",  type=int, default=None,
-                        help="SLURM array task ID → (config_idx, seed_idx)")
+                        help="LSF job index → (config_idx, seed_idx)")
     parser.add_argument("--n_seeds", type=int, default=len(SEEDS))
     parser.add_argument("--out_dir", type=str, default="results")
 

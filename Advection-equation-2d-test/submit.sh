@@ -1,40 +1,39 @@
 #!/bin/sh
-# LSF job array for the PINN sweep — DTU HPC
+# Single-job template used by submit_all.sh.
+# Not meant to be submitted directly — use submit_all.sh instead.
 #
-# Submit:       bsub < submit.sh
-# Check status: bstat
-#
-# Main sweep: SWEEP="main" in configs.py → 42 configs × 5 seeds = 210 jobs
-# Follow-up:  SWEEP="followup"           → adjust [0-N] below accordingly
+# Check queue status: bstat
 
-### Job name and array indices
-#BSUB -J "pinn_sweep[0-209]"
+### Job name (overridden per-job by submit_all.sh)
+#BSUB -J pinn_job
 
-### Queue
-#BSUB -q hpc
+### GPU queue
+#BSUB -q gpuv100
 
-### Cores (single node)
+### Cores + GPU
 #BSUB -n 4
 #BSUB -R "span[hosts=1]"
+#BSUB -gpu "num=1:mode=exclusive_process"
 
-### Memory: 4 GB per core → 16 GB total
+### Memory: 4 GB per core
 #BSUB -R "rusage[mem=4GB]"
 #BSUB -M 4GB
 
-### Walltime (hh:mm) — 8 hours should be safe for 10k epochs
+### Walltime — GPU queues max 24 h
 #BSUB -W 08:00
 
-### Output and error files (%J = job id, %I = array index)
-#BSUB -o logs/pinn_%J_%I.out
-#BSUB -e logs/pinn_%J_%I.err
+### Output files
+#BSUB -o logs/pinn_%J.out
+#BSUB -e logs/pinn_%J.err
 
-### Email when job finishes
+### Email on completion
 #BSUB -N
+#BSUB -u s245200@dtu.dk
 
 # ---------------------------------------------------------------------------
-# Environment — you already have a "pytorch" conda environment
-# ---------------------------------------------------------------------------
-source activate pytorch
+module load cuda/11.6
+module load python3/3.11.13
+source ~/venv_pinn/bin/activate
 
 mkdir -p logs results
 
@@ -42,9 +41,3 @@ python train.py \
     --job_id  "$LSB_JOBINDEX" \
     --n_seeds 5 \
     --out_dir results
-
-# ---------------------------------------------------------------------------
-# Finite-difference reference (fast — run interactively, not via job array):
-#   python train.py --fd_config_idx 0
-#   python train.py --fd_config_idx 1
-# ---------------------------------------------------------------------------
