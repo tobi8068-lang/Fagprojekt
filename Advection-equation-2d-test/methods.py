@@ -30,10 +30,13 @@ class FeatureMap(nn.Module):
     functions and helping it learn high-frequency components of the PDE solution.
     """
 
-    def __init__(self, bounds, n_features=11, sigma=1.0):
+    def __init__(self, bounds, n_features=11, sigma=1.0, rff_seed=0):
         super().__init__()
         n_dims = len(bounds)
-        B = torch.randn(n_dims, n_features) * sigma   # (d, m)
+        # Fixed generator so B is independent of the training seed —
+        # feature map quality should not be a source of run variance.
+        rng = torch.Generator().manual_seed(rff_seed)
+        B = torch.randn(n_dims, n_features, generator=rng) * sigma   # (d, m)
         self.register_buffer("B", B)
         lo = torch.tensor([b[0] for b in bounds], dtype=torch.float32)
         hi = torch.tensor([b[1] for b in bounds], dtype=torch.float32)

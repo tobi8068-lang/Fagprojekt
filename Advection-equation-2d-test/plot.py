@@ -61,6 +61,18 @@ def load_results(results_dir="results"):
                 "N_t":        int(_s(d, "N_t", 0)),
             })
         else:
+            # Recompute errors from saved grids (consistent metric regardless of
+            # which evaluate() version was used during training).
+            if "grid_u_pred" in d and "grid_u_exact" in d:
+                u_pred  = d["grid_u_pred"].astype(float)   # (3, ny, nx)
+                u_exact = d["grid_u_exact"].astype(float)  # (3, ny, nx)
+                err     = (u_pred - u_exact).ravel()
+                l2_rel  = float(np.linalg.norm(err) / np.linalg.norm(u_exact.ravel()))
+                max_err = float(np.max(np.abs(err)))
+            else:
+                l2_rel  = float(_s(d, "l2_rel_final"))
+                max_err = float(_s(d, "max_err_final"))
+
             pinn_rows.append({
                 "name":                str(_s(d, "config_name")),
                 "seed":                int(_s(d, "seed", 0)),
@@ -70,8 +82,8 @@ def load_results(results_dir="results"):
                 "use_softadapt":       bool(_s(d, "use_softadapt", False)),
                 "use_adaptive_refine": bool(_s(d, "use_adaptive_refine", False)),
                 "use_lbfgs":           bool(_s(d, "use_lbfgs", False)),
-                "l2_rel":              float(_s(d, "l2_rel_final")),
-                "max_err":             float(_s(d, "max_err_final")),
+                "l2_rel":              l2_rel,
+                "max_err":             max_err,
                 "time_sec":            float(_s(d, "total_time_sec", 0)),
                 "n_params":            int(_s(d, "n_params", 0)),
                 "_path":               path,
@@ -83,12 +95,13 @@ def load_results(results_dir="results"):
 
 
 def rank_configs(pinn_df):
-    """Aggregate over seeds; return DataFrame sorted by mean L2 (ascending)."""
+    """Aggregate over seeds; return DataFrame sorted by median L2 (ascending)."""
     agg = (
         pinn_df
         .groupby("name", sort=False)
         .agg(
             mean_l2            = ("l2_rel",              "mean"),
+            median_l2          = ("l2_rel",              "median"),
             std_l2             = ("l2_rel",              "std"),
             min_l2             = ("l2_rel",              "min"),
             mean_time          = ("time_sec",            "mean"),
@@ -101,7 +114,7 @@ def rank_configs(pinn_df):
             use_lbfgs          = ("use_lbfgs",           "first"),
         )
         .reset_index()
-        .sort_values("mean_l2")
+        .sort_values("median_l2")
         .reset_index(drop=True)
     )
     agg.index += 1   # 1-based rank
@@ -109,14 +122,14 @@ def rank_configs(pinn_df):
 
 
 def print_ranking(ranked, fd_df, top=20):
-    header = f"\n{'Rank':<5} {'Config':<38} {'Mean L2':>10} {'Std L2':>10} {'Min L2':>10} {'Time (s)':>9} {'Seeds':>6}"
+    header = f"\n{'Rank':<5} {'Config':<38} {'Median L2':>10} {'Mean L2':>10} {'Std L2':>10} {'Min L2':>10} {'Time (s)':>9} {'Seeds':>6}"
     print(header)
     print("-" * len(header))
     for rank, row in ranked.head(top).iterrows():
         std = f"{row['std_l2']:.2e}" if not np.isnan(row["std_l2"]) else "  n/a  "
         print(
             f"{rank:<5} {row['name']:<38} "
-            f"{row['mean_l2']:>10.3e} {std:>10} {row['min_l2']:>10.3e} "
+            f"{row['median_l2']:>10.3e} {row['mean_l2']:>10.3e} {std:>10} {row['min_l2']:>10.3e} "
             f"{row['mean_time']:>8.0f}s {row['n_seeds']:>6}"
         )
     if not fd_df.empty:
@@ -137,11 +150,11 @@ def fig_ranking(ranked, fd_df, top=15, save_dir="figures"):
 
     colors = plt.cm.RdYlGn(np.linspace(0.85, 0.15, len(top_df)))
     bars = ax.barh(
-        top_df["name"], top_df["mean_l2"],
+        top_df["name"], top_df["median_l2"],
         xerr=top_df["std_l2"].fillna(0),
         color=colors, edgecolor="white", height=0.65, capsize=3,
     )
-    for bar, val in zip(bars, top_df["mean_l2"]):
+    for bar, val in zip(bars, top_df["median_l2"]):
         ax.text(bar.get_width() * 1.04, bar.get_y() + bar.get_height() / 2,
                 f"{val:.2e}", va="center", fontsize=8)
 
@@ -151,7 +164,7 @@ def fig_ranking(ranked, fd_df, top=15, save_dir="figures"):
                        label=f"FD {row['name']} ({row['l2_rel']:.2e})")
         ax.legend(fontsize=8)
 
-    ax.set_xlabel("Mean L2 relative error  (error bars = std across seeds)")
+    ax.set_xlabel("Median L2 relative error  (error bars = std across seeds)")
     ax.set_title(f"Config ranking — top {top}")
     ax.margins(y=0.02)
     fig.tight_layout()
