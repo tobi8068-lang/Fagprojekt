@@ -1,16 +1,16 @@
 #!/bin/sh
-# Submit all 210 PINN jobs as individual LSF jobs.
+# Submit all 170 PINN jobs as individual LSF jobs (34 configs × 5 seeds).
 # DTU HPC does not support job arrays via #BSUB -J name[0-N].
 #
 # Usage:
-#   bash submit_all.sh           # submit all 210 jobs
+#   bash submit_all.sh           # submit all 170 jobs
 #   bash submit_all.sh 0 9       # submit only jobs 0-9 (for testing)
 #
 # Check status: bstat
 # Kill all your jobs: bkill 0
 
 START=${1:-0}
-END=${2:-209}
+END=${2:-169}
 
 mkdir -p logs results
 

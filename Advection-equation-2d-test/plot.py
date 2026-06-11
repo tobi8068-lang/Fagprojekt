@@ -166,11 +166,14 @@ def fig_convergence(pinn_df, ranked, top=5, save_dir="figures"):
     top_names = ranked.head(top)["name"].tolist()
     colors    = plt.cm.tab10(np.linspace(0, 0.9, top))
 
-    fig, (ax_ep, ax_t) = plt.subplots(1, 2, figsize=(12, 4.5))
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8))
+    (ax_l2_ep, ax_l2_t), (ax_li_ep, ax_li_t) = axes
+
+    min_max_wt = np.inf   # shortest run's final wall-clock time → x-axis cutoff
 
     for color, name in zip(colors, top_names):
         subset = pinn_df[pinn_df["name"] == name]
-        all_l2, all_ep, all_wt = [], [], []
+        all_l2, all_li, all_ep, all_wt = [], [], [], []
 
         for _, row in subset.iterrows():
             d  = np.load(row["_path"], allow_pickle=True)
@@ -179,36 +182,51 @@ def fig_convergence(pinn_df, ranked, top=5, save_dir="figures"):
             wt = d["hist_wall_time"].astype(float)
             if len(ep) == 0:
                 continue
-            wt_at_eval = wt[ep.astype(int) - 1]   # wall time at each eval epoch
-            all_ep.append(ep);  all_l2.append(l2);  all_wt.append(wt_at_eval)
+            li = d["eval_max_err"].astype(float) if "eval_max_err" in d else np.full_like(l2, np.nan)
+            wt_at_eval = wt[ep.astype(int) - 1]
+            all_ep.append(ep); all_l2.append(l2); all_li.append(li); all_wt.append(wt_at_eval)
 
         if not all_l2:
             continue
 
-        n = min(len(x) for x in all_l2)
-        l2_mat = np.array([x[:n] for x in all_l2])
+        n      = min(len(x) for x in all_l2)
         ep_ref = all_ep[0][:n]
         wt_ref = np.mean([x[:n] for x in all_wt], axis=0)
-        mean   = l2_mat.mean(axis=0)
-        std    = l2_mat.std(axis=0)
         lbl    = name[:32]
 
-        for ax, xs in [(ax_ep, ep_ref), (ax_t, wt_ref)]:
-            ax.semilogy(xs, mean, color=color, label=lbl, lw=1.8)
-            ax.fill_between(xs,
-                            np.maximum(mean - std, 1e-12),
-                            mean + std,
-                            color=color, alpha=0.12)
+        min_max_wt = min(min_max_wt, wt_ref[-1])
 
-    for ax, xlabel, title in [
-        (ax_ep, "Epoch",            f"Top {top} — error vs epoch"),
-        (ax_t,  "Wall-clock (s)",   f"Top {top} — error vs time"),
+        for (ax_ep, ax_t), all_vals, ylabel in [
+            ((ax_l2_ep, ax_l2_t), all_l2, "L2"),
+            ((ax_li_ep, ax_li_t), all_li, "Linf"),
+        ]:
+            mat  = np.array([x[:n] for x in all_vals])
+            mean = mat.mean(axis=0)
+            std  = mat.std(axis=0)
+            for ax, xs in [(ax_ep, ep_ref), (ax_t, wt_ref)]:
+                ax.semilogy(xs, mean, color=color,
+                            label=lbl if (ax is ax_l2_ep) else None, lw=1.8)
+                ax.fill_between(xs,
+                                np.maximum(mean - std, 1e-12),
+                                mean + std,
+                                color=color, alpha=0.12)
+
+    if np.isfinite(min_max_wt):
+        ax_l2_t.set_xlim(left=0, right=min_max_wt)
+        ax_li_t.set_xlim(left=0, right=min_max_wt)
+
+    for ax, xlabel, ylabel, title in [
+        (ax_l2_ep, "Epoch",          "L2 relative error",   f"Top {top} — L2 vs epoch"),
+        (ax_l2_t,  "Wall-clock (s)", "L2 relative error",   f"Top {top} — L2 vs time"),
+        (ax_li_ep, "Epoch",          "L∞ absolute error",   f"Top {top} — L∞ vs epoch"),
+        (ax_li_t,  "Wall-clock (s)", "L∞ absolute error",   f"Top {top} — L∞ vs time"),
     ]:
         ax.set_xlabel(xlabel)
-        ax.set_ylabel("L2 relative error")
+        ax.set_ylabel(ylabel)
         ax.set_title(title)
-        ax.legend(fontsize=7, loc="upper right")
         ax.grid(True, which="both", ls=":", alpha=0.4)
+
+    ax_l2_ep.legend(fontsize=7, loc="upper right")
 
     fig.tight_layout()
     _save(fig, save_dir, "2_convergence.png")
@@ -303,6 +321,71 @@ def fig_time_vs_error(pinn_df, fd_df, save_dir="figures"):
 
 
 # ---------------------------------------------------------------------------
+# Figure 5 — Solution heatmaps (best config, t = 0 / T/2 / T)
+# ---------------------------------------------------------------------------
+
+def fig_heatmaps(pinn_df, ranked, save_dir="figures"):
+    """
+    3 rows (t = 0, T/2, T) × 3 columns (exact | predicted | |error|)
+    for the best-ranked config (first seed available).
+    If exact solution is NaN the exact column is skipped.
+    """
+    best_name = ranked.iloc[0]["name"]
+    row       = pinn_df[pinn_df["name"] == best_name].iloc[0]
+    d         = np.load(row["_path"], allow_pickle=True)
+
+    if "grid_u_pred" not in d:
+        print("  Skipping heatmap figure — no grid data in .npz (re-run training).")
+        return
+
+    x       = d["grid_x"]
+    y       = d["grid_y"]
+    t_vals  = d["grid_t_vals"]
+    u_pred  = d["grid_u_pred"]   # (3, ny, nx)
+    u_exact = d["grid_u_exact"]  # (3, ny, nx)
+
+    has_exact = not np.all(np.isnan(u_exact))
+    n_cols    = 3 if has_exact else 2
+    col_titles = (["Exact", "Predicted", "|Error|"] if has_exact
+                  else ["Predicted", "Mean |Error| (no exact)"])
+
+    fig, axes = plt.subplots(
+        3, n_cols,
+        figsize=(4.5 * n_cols, 10),
+        constrained_layout=True,
+    )
+    if axes.ndim == 1:
+        axes = axes[:, np.newaxis]   # keep 2-D indexing
+
+    vmin = min(u_pred.min(), u_exact[~np.isnan(u_exact)].min() if has_exact else u_pred.min())
+    vmax = max(u_pred.max(), u_exact[~np.isnan(u_exact)].max() if has_exact else u_pred.max())
+
+    for row_idx, t_val in enumerate(t_vals):
+        up = u_pred[row_idx]
+        ue = u_exact[row_idx]
+        err = np.abs(up - ue) if has_exact else np.zeros_like(up)
+
+        col_data = ([ue, up, err] if has_exact else [up, err])
+
+        for col_idx, data in enumerate(col_data):
+            ax  = axes[row_idx, col_idx]
+            cmap = "RdBu_r" if col_idx < (n_cols - 1) else "Reds"
+            vlo  = vmin      if col_idx < (n_cols - 1) else 0.0
+            vhi  = vmax      if col_idx < (n_cols - 1) else err.max() or 1.0
+
+            im = ax.pcolormesh(x, y, data, cmap=cmap, vmin=vlo, vmax=vhi, shading="auto")
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+            if row_idx == 0:
+                ax.set_title(col_titles[col_idx], fontsize=11)
+            ax.set_ylabel(f"t = {t_val:.2f}" if col_idx == 0 else "y")
+            ax.set_xlabel("x")
+
+    fig.suptitle(f"Solution heatmaps — {best_name}", fontsize=12, y=1.01)
+    _save(fig, save_dir, "5_heatmaps.png", bbox_inches="tight")
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -342,6 +425,7 @@ def main():
     fig_convergence(pinn_df, ranked, top=5,         save_dir=args.figures)
     fig_toggles(pinn_df,                            save_dir=args.figures)
     fig_time_vs_error(pinn_df, fd_df,               save_dir=args.figures)
+    fig_heatmaps(pinn_df, ranked,                   save_dir=args.figures)
 
     print(f"\nDone. All figures in {args.figures}/")
 

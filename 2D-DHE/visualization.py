@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from IPython.display import HTML
-from config import T_scale, T_TIME
+from config import T_SCALE, T_TIME
 
 def animate_solution(model, device, N=100):
     model.eval()
@@ -31,7 +31,7 @@ def animate_solution(model, device, N=100):
         ], dim=1)
 
         with torch.no_grad():
-            u_pred = model(data)*T_scale
+            u_pred = model(data)*T_SCALE
 
         u_pred = u_pred.reshape(N, N).cpu().numpy()
         X_plot = X.cpu().numpy()

@@ -20,58 +20,65 @@ import torch
 import torch.nn as nn
 
 from methods import (
-    FeatureMap2D, FourierFeatureMap2D,
+    FeatureMap, ScaledInputs,
     Sin, VanillaPINN, MoEModel,
     train as run_training,
-    fd_solve,
+    numerical_solve,
 )
 from configs import CONFIGS, FD_CONFIGS, SEEDS, DOMAIN
 
 # ---------------------------------------------------------------------------
-# Network architecture — matches the working notebook
-# N_FREQ=5 → IN_DIM=22 for both feature maps (det: 2+4*5, rff: 2*11)
+# Network architecture
 # ---------------------------------------------------------------------------
 
-N_FREQ     = 5    # for FeatureMap2D (deterministic)
-N_FREQ_RFF = 11   # for FourierFeatureMap2D → out_dim = 2*11 = 22
-IN_DIM     = 22   # shared network input size
+N_FEATURES = 11   # RFF frequencies → out_dim = 2 * N_FEATURES = 22
+
+# Widths chosen so vanilla and MoE have the same total parameter count.
+# Vanilla always uses w=64.  MoE expert width depends on use_rff because
+# removing RFF shrinks each of the 3 expert first layers (22→w vs 3→w),
+# creating a larger gap than vanilla's single first layer.
+#   RFF  (in_dim=22): vanilla=14 017,  MoE 3×34+gate=13 580  (−3%)
+#   noRFF(in_dim= 3): vanilla=12 801,  MoE 3×36+gate=12 646  (−1%)
+_VANILLA_WIDTH          = 64
+_MOE_EXPERT_WIDTH_RFF   = 34
+_MOE_EXPERT_WIDTH_NORFF = 36
 
 
-def _expert(use_sin=False):
+def _expert(in_dim, width, use_sin=False):
     Act = Sin if use_sin else nn.Tanh
     return nn.Sequential(
-        nn.Linear(IN_DIM, 10), Act(),
-        nn.Linear(10, 10),     Act(),
-        nn.Linear(10, 12),     Act(),
-        nn.Linear(12, 10),     Act(),
-        nn.Linear(10, 1),
+        nn.Linear(in_dim, width), Act(),
+        nn.Linear(width,  width), Act(),
+        nn.Linear(width,  width), Act(),
+        nn.Linear(width,  width), Act(),
+        nn.Linear(width,  1),
     )
 
 
 def build_model(cfg, device):
-    Y, T    = DOMAIN["Y"], DOMAIN["T"]
-    fm_type = cfg.get("feature_map", "deterministic")
+    T    = DOMAIN["T"]
+    X_lo = DOMAIN.get("X_lo", 0.0);  X_hi = DOMAIN["X_hi"]
+    Y_lo = DOMAIN.get("Y_lo", 0.0);  Y_hi = DOMAIN["Y_hi"]
+    bounds = [(X_lo, X_hi), (Y_lo, Y_hi), (0.0, T)]
 
-    if fm_type == "fourier_rff":
-        fm = FourierFeatureMap2D(Y, T, n_features=N_FREQ_RFF, sigma=1.0).to(device)
+    if cfg.get("use_rff", True):
+        fm = FeatureMap(bounds, n_features=N_FEATURES, sigma=1.0).to(device)
     else:
-        fm = FeatureMap2D(Y, T, n_freq_y=N_FREQ, n_freq_t=N_FREQ).to(device)
+        fm = ScaledInputs(bounds).to(device)
+    in_dim = fm.out_dim
 
     if cfg["use_moe"]:
-        # Expert 0: Tanh, Expert 1: Sin, Expert 2: Tanh  (mirrors the notebook)
-        experts = [_expert(False), _expert(True), _expert(False)]
+        moe_w = _MOE_EXPERT_WIDTH_RFF if cfg.get("use_rff", True) else _MOE_EXPERT_WIDTH_NORFF
+        experts = [_expert(in_dim, moe_w, False),
+                   _expert(in_dim, moe_w, True),
+                   _expert(in_dim, moe_w, False)]
         gating_net = nn.Sequential(
-            nn.Linear(IN_DIM, 10), nn.Tanh(),
-            nn.Linear(10, 10),     nn.Tanh(),
-            nn.Linear(10, 12),     nn.Tanh(),
-            nn.Linear(12, 10),     nn.Tanh(),
-            nn.Linear(10, len(experts)),
+            nn.Linear(in_dim, 16), nn.Tanh(),
+            nn.Linear(16, len(experts)),
         )
-        model = MoEModel(fm, gating_net, experts,
-                         gating=cfg["moe_gating"],
-                         k=cfg.get("moe_k", 2))
+        model = MoEModel(fm, gating_net, experts)
     else:
-        model = VanillaPINN(fm, _expert(False))
+        model = VanillaPINN(fm, _expert(in_dim, _VANILLA_WIDTH))
 
     return model.to(device)
 
@@ -81,27 +88,96 @@ def build_model(cfg, device):
 # ---------------------------------------------------------------------------
 
 def evaluate(model, device, n_grid=100):
-    """Returns {"l2_rel": float, "max_err": float} on a uniform grid."""
-    Y, T = DOMAIN["Y"], DOMAIN["T"]
-    c, v = DOMAIN["c"], DOMAIN["v"]
+    """
+    Evaluate L2 relative error and L∞ (supremum) over the full (x, y) spatial
+    domain at t = 0, T/2, T.  Returns NaN when no exact solution is available.
+    """
+    exact_fn = DOMAIN.get("exact_fn")
+    if exact_fn is None:
+        return {"l2_rel": float("nan"), "max_err": float("nan")}
 
-    y_np = np.linspace(0.0, Y, n_grid)
-    t_np = np.linspace(0.0, T, n_grid)
-    yg, tg = np.meshgrid(y_np, t_np)
+    X_lo = DOMAIN.get("X_lo", 0.0);  X_hi = DOMAIN["X_hi"]
+    Y_lo = DOMAIN.get("Y_lo", 0.0);  Y_hi = DOMAIN["Y_hi"]
+    T    = DOMAIN["T"]
 
-    y_t = torch.tensor(yg.reshape(-1, 1), dtype=torch.float32, device=device)
-    t_t = torch.tensor(tg.reshape(-1, 1), dtype=torch.float32, device=device)
+    x_np = np.linspace(X_lo, X_hi, n_grid)
+    y_np = np.linspace(Y_lo, Y_hi, n_grid)
+    xg, yg = np.meshgrid(x_np, y_np)          # (n_grid, n_grid) spatial grid
 
-    with torch.no_grad():
-        _, _, u_pred = model(y_t, t_t)
+    err_all    = []
+    u_exact_all = []
 
-    u_pred  = u_pred.cpu().numpy().reshape(n_grid, n_grid)
-    u_exact = np.exp(-v * tg) * np.sin(yg - c * tg)
+    for t_val in [0.0, T / 2.0, T]:
+        tg = np.full_like(xg, t_val)
 
-    err = u_pred - u_exact
+        x_t = torch.tensor(xg.reshape(-1, 1), dtype=torch.float32, device=device)
+        y_t = torch.tensor(yg.reshape(-1, 1), dtype=torch.float32, device=device)
+        t_t = torch.tensor(tg.reshape(-1, 1), dtype=torch.float32, device=device)
+
+        with torch.no_grad():
+            _, _, u_pred = model(x_t, y_t, t_t)
+
+        u_pred_np  = u_pred.cpu().numpy().ravel()
+        u_exact_np = exact_fn(xg, yg, tg, DOMAIN).ravel()
+
+        err_all.append(u_pred_np - u_exact_np)
+        u_exact_all.append(u_exact_np)
+
+    err_all     = np.concatenate(err_all)
+    u_exact_all = np.concatenate(u_exact_all)
+
+    l2_rel  = float(np.linalg.norm(err_all) / np.linalg.norm(u_exact_all))
+    max_err = float(np.max(np.abs(err_all)))
+    return {"l2_rel": l2_rel, "max_err": max_err}
+
+
+def solution_grid(model, device, n_grid=200):
+    """
+    Evaluate model and exact solution on an (x, y) grid at t = 0, T/2, T.
+
+    Returns dict with:
+        grid_x        : (n_grid,)       x coordinates
+        grid_y        : (n_grid,)       y coordinates
+        grid_t_vals   : (3,)            [0, T/2, T]
+        grid_u_pred   : (3, n_grid, n_grid)
+        grid_u_exact  : (3, n_grid, n_grid)  — NaN where exact_fn returns None
+    """
+    exact_fn = DOMAIN.get("exact_fn")
+    X_lo = DOMAIN.get("X_lo", 0.0);  X_hi = DOMAIN["X_hi"]
+    Y_lo = DOMAIN.get("Y_lo", 0.0);  Y_hi = DOMAIN["Y_hi"]
+    T    = DOMAIN["T"]
+
+    x_np = np.linspace(X_lo, X_hi, n_grid)
+    y_np = np.linspace(Y_lo, Y_hi, n_grid)
+    xg, yg = np.meshgrid(x_np, y_np)   # (n_grid, n_grid), axes: [y-idx, x-idx]
+
+    t_vals = [0.0, T / 2.0, T]
+    u_pred_snaps  = []
+    u_exact_snaps = []
+
+    for t_val in t_vals:
+        tg = np.full_like(xg, t_val)
+
+        x_t = torch.tensor(xg.reshape(-1, 1), dtype=torch.float32, device=device)
+        y_t = torch.tensor(yg.reshape(-1, 1), dtype=torch.float32, device=device)
+        t_t = torch.tensor(tg.reshape(-1, 1), dtype=torch.float32, device=device)
+
+        with torch.no_grad():
+            _, _, u = model(x_t, y_t, t_t)
+        u_pred_snaps.append(u.cpu().numpy().reshape(n_grid, n_grid))
+
+        if exact_fn is not None:
+            ue = exact_fn(xg, yg, tg, DOMAIN)
+            u_exact_snaps.append(ue if ue is not None else np.full_like(xg, np.nan))
+        else:
+            u_exact_snaps.append(np.full_like(xg, np.nan))
+
     return {
-        "l2_rel":  float(np.linalg.norm(err) / np.linalg.norm(u_exact)),
-        "max_err": float(np.max(np.abs(err))),
+        "grid_x":       x_np,
+        "grid_y":       y_np,
+        "grid_t_vals":  np.array(t_vals),
+        "grid_u_pred":  np.array(u_pred_snaps),   # (3, n_grid, n_grid)
+        "grid_u_exact": np.array(u_exact_snaps),  # (3, n_grid, n_grid)
     }
 
 
@@ -136,6 +212,8 @@ def run_pinn(config_idx, seed, out_dir):
     print(f"L2 rel: {final['l2_rel']:.4e}  |  Max err: {final['max_err']:.4e}")
     print(f"Total wall time: {total_time:.1f}s")
 
+    grid = solution_grid(model, device, n_grid=200)
+
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"cfg{config_idx:02d}_seed{seed}.npz")
 
@@ -148,19 +226,20 @@ def run_pinn(config_idx, seed, out_dir):
         seed            = seed,
 
         # --- Method flags ---
-        feature_map          = cfg.get("feature_map", "deterministic"),
         use_moe              = cfg["use_moe"],
-        moe_gating           = cfg.get("moe_gating") or "",
+        use_rff              = cfg.get("use_rff", False),
+        use_fd_deriv         = cfg.get("use_fd_deriv", True),
         use_softadapt        = cfg["use_softadapt"],
         use_adaptive_refine  = cfg["use_adaptive_refine"],
         use_lbfgs            = cfg["use_lbfgs"],
 
         # --- Domain ---
-        Y   = DOMAIN["Y"],
-        T   = DOMAIN["T"],
-        c   = DOMAIN["c"],
-        v   = DOMAIN["v"],
-        N_f = DOMAIN["N_f"],
+        X_lo = DOMAIN.get("X_lo", 0.0),
+        X_hi = DOMAIN["X_hi"],
+        Y_lo = DOMAIN.get("Y_lo", 0.0),
+        Y_hi = DOMAIN["Y_hi"],
+        T    = DOMAIN["T"],
+        N_f  = DOMAIN["N_f"],
 
         # --- Model size ---
         n_params = n_params,
@@ -183,6 +262,13 @@ def run_pinn(config_idx, seed, out_dir):
         l2_rel_final   = final["l2_rel"],
         max_err_final  = final["max_err"],
 
+        # --- Solution grids at t = 0, T/2, T ---
+        grid_x       = grid["grid_x"],
+        grid_y       = grid["grid_y"],
+        grid_t_vals  = grid["grid_t_vals"],
+        grid_u_pred  = grid["grid_u_pred"],
+        grid_u_exact = grid["grid_u_exact"],
+
         # --- Timing ---
         total_time_sec = total_time,
     )
@@ -197,7 +283,7 @@ def run_fd(fd_config_idx, out_dir):
     cfg = FD_CONFIGS[fd_config_idx]
     print(f"[FD] Config: {cfg['name']}  N_y={cfg['N_y']}")
 
-    result = fd_solve(DOMAIN, N_y=cfg["N_y"], N_t_plot=cfg.get("N_t_plot", 1000))
+    result = numerical_solve(DOMAIN, N_y=cfg["N_y"], N_t_plot=cfg.get("N_t_plot", 1000))
 
     print(f"L2 rel: {result['l2_rel_final']:.4e}  |  Max err: {result['max_err_final']:.4e}")
     print(f"Solve time: {result['solve_time_sec']:.3f}s")

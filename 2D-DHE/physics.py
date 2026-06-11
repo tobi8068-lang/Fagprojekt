@@ -1,8 +1,9 @@
 import torch
-from config import ALPHA
+from config import ALPHA, T_TIME
 
 def compute_pde_loss(model, data, RHS, loss_fn):
     u = model(data)
+    ALPHA_STAR = ALPHA*T_TIME
 
     grads = torch.autograd.grad(u, data, torch.ones_like(u), create_graph=True)[0]
 
@@ -16,7 +17,7 @@ def compute_pde_loss(model, data, RHS, loss_fn):
     u_xx = grads_x[:, 0:1]
     u_yy = grads_y[:, 1:2]
 
-    RHS_pred = u_t -(u_xx + u_yy)
+    RHS_pred = u_t -ALPHA_STAR*(u_xx + u_yy)
 
     return loss_fn(RHS_pred, RHS)
 
@@ -56,29 +57,6 @@ def compute_boundary_loss(model, conditions, loss_fn):
     )
 
     return loss
-
-#def compute_boundary_loss(model, conditions, loss_fn):
-    venstre = conditions["venstre"]
-    højre = conditions["højre"]
-    nedre = conditions["nedre"]
-    øvre = conditions["øvre"]
-
-    u_v = model(venstre)
-    u_h = model(højre)
-    u_n = model(nedre)
-    u_ø = model(øvre)
-
-    zeros_v = torch.zeros_like(u_v)
-    zeros_h = torch.zeros_like(u_h)
-    zeros_n = torch.zeros_like(u_n)
-    zeros_ø = torch.zeros_like(u_ø)
-
-    loss_v = loss_fn(u_v, zeros_v)
-    loss_h = loss_fn(u_h, zeros_h)
-    loss_n = loss_fn(u_n, zeros_n)
-    loss_ø = loss_fn(u_ø, zeros_ø)
-
-    return loss_v + loss_h + loss_n + loss_ø
 
 def compute_initial_loss(model, conditions, loss_fn):
     initial_points = conditions["initial_points"]
