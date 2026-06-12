@@ -76,7 +76,7 @@ def load_results(results_dir="results"):
             pinn_rows.append({
                 "name":                str(_s(d, "config_name")),
                 "seed":                int(_s(d, "seed", 0)),
-                "feature_map":         str(_s(d, "feature_map", "deterministic")),
+                "feature_map":         "fourier_rff" if bool(_s(d, "use_rff", False)) else "deterministic",
                 "use_moe":             bool(_s(d, "use_moe", False)),
                 "moe_gating":          str(_s(d, "moe_gating", "")),
                 "use_softadapt":       bool(_s(d, "use_softadapt", False)),
@@ -254,7 +254,7 @@ def fig_toggles(pinn_df, save_dir="figures"):
     # Each entry: (column, title, {key: short_label})
     # For boolean toggles keys are False/True; for feature_map keys are strings.
     toggles = [
-        ("feature_map",         "Feature map",      {"deterministic": "det", "fourier_rff": "rff"}),
+        ("feature_map",         "Fourier features",  {"deterministic": "Off", "fourier_rff": "On"}),
         ("use_softadapt",       "SoftAdapt",        {False: "Off", True: "On"}),
         ("use_adaptive_refine", "Adaptive refine",  {False: "Off", True: "On"}),
         ("use_lbfgs",           "L-BFGS",           {False: "Off", True: "On"}),
