@@ -251,36 +251,79 @@ def fig_convergence(pinn_df, ranked, top=5, save_dir="figures"):
 # ---------------------------------------------------------------------------
 
 def fig_toggles(pinn_df, save_dir="figures"):
+    # Each entry: (column, title, {key: short_label})
+    # For boolean toggles keys are False/True; for feature_map keys are strings.
     toggles = [
         ("feature_map",         "Feature map",      {"deterministic": "det", "fourier_rff": "rff"}),
-        ("use_moe",             "MoE",              {False: "Vanilla", True: "MoE"}),
         ("use_softadapt",       "SoftAdapt",        {False: "Off", True: "On"}),
         ("use_adaptive_refine", "Adaptive refine",  {False: "Off", True: "On"}),
         ("use_lbfgs",           "L-BFGS",           {False: "Off", True: "On"}),
     ]
 
-    fig, axes = plt.subplots(1, len(toggles), figsize=(14, 4.5), sharey=True)
-    colors = ["#5599ee", "#ee7755"]
+    # 4 colours: vanilla-off, vanilla-on, moe-off, moe-on
+    CV0, CV1 = "#7EB8F7", "#1A6BB5"   # vanilla: light / dark blue
+    CM0, CM1 = "#F7A07E", "#C44B1A"   # moe:     light / dark orange
 
-    for ax, (col, title, labels) in zip(axes, toggles):
-        groups = {labels[k]: pinn_df[pinn_df[col] == k]["l2_rel"].values
-                  for k in labels}
-        keys = list(groups.keys())
+    van = pinn_df[pinn_df["use_moe"] == False]
+    moe = pinn_df[pinn_df["use_moe"] == True]
+
+    n_panels = 1 + len(toggles)   # MoE overview + one per method toggle
+    fig, axes = plt.subplots(1, n_panels, figsize=(18, 4.5), sharey=True)
+
+    # --- Panel 0: Vanilla vs MoE (overview, 2 boxes) -------------------------
+    ax = axes[0]
+    bp = ax.boxplot(
+        [van["l2_rel"].values, moe["l2_rel"].values],
+        labels=["Vanilla", "MoE"],
+        patch_artist=True, notch=False,
+        medianprops={"color": "black", "lw": 1.8},
+        flierprops={"marker": ".", "markersize": 3, "alpha": 0.4},
+    )
+    for patch, c in zip(bp["boxes"], [CV0, CM0]):
+        patch.set_facecolor(c);  patch.set_alpha(0.85)
+    ax.set_yscale("log");  ax.set_title("MoE")
+    ax.set_ylabel("L2 relative error")
+    ax.grid(True, axis="y", ls=":", alpha=0.4)
+
+    # --- Panels 1+: 4 boxes each (V-off, V-on, M-off, M-on) -----------------
+    for ax, (col, title, labels) in zip(axes[1:], toggles):
+        keys = list(labels.keys())
+        k0, k1 = keys
+        data = [
+            van[van[col] == k0]["l2_rel"].values,
+            van[van[col] == k1]["l2_rel"].values,
+            moe[moe[col] == k0]["l2_rel"].values,
+            moe[moe[col] == k1]["l2_rel"].values,
+        ]
+        xpos   = [1, 2, 3.3, 4.3]
+        xlbls  = [f"V·{labels[k0]}", f"V·{labels[k1]}",
+                  f"M·{labels[k0]}", f"M·{labels[k1]}"]
+        colors4 = [CV0, CV1, CM0, CM1]
+
         bp = ax.boxplot(
-            [groups[k] for k in keys], labels=keys,
+            data, positions=xpos, widths=0.65, labels=xlbls,
             patch_artist=True, notch=False,
             medianprops={"color": "black", "lw": 1.8},
             flierprops={"marker": ".", "markersize": 3, "alpha": 0.4},
         )
-        for patch, c in zip(bp["boxes"], colors):
-            patch.set_facecolor(c);  patch.set_alpha(0.75)
-        ax.set_yscale("log")
-        ax.set_title(title)
+        for patch, c in zip(bp["boxes"], colors4):
+            patch.set_facecolor(c);  patch.set_alpha(0.85)
+        ax.set_xlim(0.3, 5.0)
+        ax.set_yscale("log");  ax.set_title(title)
         ax.grid(True, axis="y", ls=":", alpha=0.4)
-        if ax == axes[0]:
-            ax.set_ylabel("L2 relative error")
 
-    fig.suptitle("Effect of each method toggle — all configs, all seeds", y=1.01)
+    # Legend
+    from matplotlib.patches import Patch
+    legend_handles = [
+        Patch(facecolor=CV0, alpha=0.85, label="Vanilla · Off"),
+        Patch(facecolor=CV1, alpha=0.85, label="Vanilla · On"),
+        Patch(facecolor=CM0, alpha=0.85, label="MoE · Off"),
+        Patch(facecolor=CM1, alpha=0.85, label="MoE · On"),
+    ]
+    fig.legend(handles=legend_handles, loc="upper center", ncol=4,
+               fontsize=9, bbox_to_anchor=(0.5, 1.08))
+
+    fig.suptitle("Effect of each method toggle — all configs, all seeds", y=1.14)
     fig.tight_layout()
     _save(fig, save_dir, "3_toggles.png", bbox_inches="tight")
 
