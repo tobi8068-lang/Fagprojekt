@@ -335,10 +335,14 @@ def main():
     parser = argparse.ArgumentParser()
 
     # PINN mode
-    parser.add_argument("--job_id",  type=int, default=None,
+    parser.add_argument("--job_id",     type=int, default=None,
                         help="LSF job index → (config_idx, seed_idx)")
-    parser.add_argument("--n_seeds", type=int, default=len(SEEDS))
-    parser.add_argument("--out_dir", type=str, default="results")
+    parser.add_argument("--n_seeds",    type=int, default=len(SEEDS))
+    parser.add_argument("--config_idx", type=int, default=None,
+                        help="Config index (use with --seed for direct invocation)")
+    parser.add_argument("--seed",       type=int, default=None,
+                        help="Explicit seed value (use with --config_idx)")
+    parser.add_argument("--out_dir",    type=str, default="results")
 
     # FD mode
     parser.add_argument("--fd_config_idx", type=int, default=None,
@@ -350,6 +354,11 @@ def main():
         if args.fd_config_idx >= len(FD_CONFIGS):
             sys.exit(f"fd_config_idx {args.fd_config_idx} out of range (max {len(FD_CONFIGS)-1})")
         run_fd(args.fd_config_idx, args.out_dir)
+
+    elif args.config_idx is not None and args.seed is not None:
+        if args.config_idx >= len(CONFIGS):
+            sys.exit(f"config_idx {args.config_idx} out of range (max {len(CONFIGS)-1})")
+        run_pinn(args.config_idx, args.seed, args.out_dir)
 
     elif args.job_id is not None:
         n_seeds    = args.n_seeds
