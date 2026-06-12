@@ -79,6 +79,7 @@ def load_results(results_dir="results"):
                 "feature_map":         "fourier_rff" if bool(_s(d, "use_rff", False)) else "deterministic",
                 "use_moe":             bool(_s(d, "use_moe", False)),
                 "moe_gating":          str(_s(d, "moe_gating", "")),
+                "use_fd_deriv":        bool(_s(d, "use_fd_deriv", False)),
                 "use_softadapt":       bool(_s(d, "use_softadapt", False)),
                 "use_adaptive_refine": bool(_s(d, "use_adaptive_refine", False)),
                 "use_lbfgs":           bool(_s(d, "use_lbfgs", False)),
@@ -360,9 +361,10 @@ def fig_toggles(pinn_df, save_dir="figures"):
     # For boolean toggles keys are False/True; for feature_map keys are strings.
     toggles = [
         ("feature_map",         "Fourier features",  {"deterministic": "Off", "fourier_rff": "On"}),
-        ("use_softadapt",       "SoftAdapt",        {False: "Off", True: "On"}),
-        ("use_adaptive_refine", "Adaptive refine",  {False: "Off", True: "On"}),
-        ("use_lbfgs",           "L-BFGS",           {False: "Off", True: "On"}),
+        ("use_fd_deriv",        "Finite diff.",      {False: "Off", True: "On"}),
+        ("use_softadapt",       "SoftAdapt",         {False: "Off", True: "On"}),
+        ("use_adaptive_refine", "Adaptive refine",   {False: "Off", True: "On"}),
+        ("use_lbfgs",           "L-BFGS",            {False: "Off", True: "On"}),
     ]
 
     # 4 colours: vanilla-off, vanilla-on, moe-off, moe-on
